@@ -1,10 +1,10 @@
 import json
 import csv
 import os
+from datetime import datetime, timedelta
+
 import psycopg2
 import requests
-
-from datetime import datetime, timedelta
 from airflow.exceptions import AirflowFailException
 from airflow.hooks.base import BaseHook
 from airflow.models import Variable
@@ -50,8 +50,8 @@ with DAG(
     @task(task_id="login_and_generate_a_token")
     def login_and_generate_a_token(**context):
         s = requests.Session()
-        email = Variable.get("email")
-        password = Variable.get("password")
+        email = str(Variable.get("email"))
+        password = str(Variable.get("password"))
         log_in = {"email": email, "password": password}
         # authorize to clash of clans api
         response = s.post(
@@ -61,7 +61,7 @@ with DAG(
             raise AirflowFailException(f"Failed login: {response['status']['message']}")
 
         # getting all keys
-        ip_adress = get_ip()
+        ip_address = context["ti"].xcom_pull(task_ids="get_current_ip")
         response = s.post("https://developer.clashofclans.com/api/apikey/list").json()
         if response["status"]["message"] != "ok":
             raise AirflowFailException(
@@ -72,7 +72,7 @@ with DAG(
 
         # if find ip match, return key, else delete it
         for key in all_keys:
-            if ip_adress in key["cidrRanges"]:
+            if ip_address in key["cidrRanges"]:
                 return key["key"]
             else:
                 s.post(
@@ -84,7 +84,7 @@ with DAG(
         creating_key_payload = {
             "name": "api from python",
             "description": "created at " + str(datetime.now()),
-            "cidrRanges": ip_adress,
+            "cidrRanges": ip_address,
         }
         response = s.post(
             "https://developer.clashofclans.com/api/apikey/create",
@@ -99,7 +99,7 @@ with DAG(
 
     @task(task_id="fetch_clan_war_data")
     def fetch_clan_war_data(**context):
-        TOKEN = context["ti"].xcom_pull(task_id="login_and_generate_a_token")
+        TOKEN = context["ti"].xcom_pull(task_ids="login_and_generate_a_token")
         headers = {"Authorization": "Bearer " + TOKEN}
         request = requests.get(REQUEST_URL, headers=headers)
 
@@ -443,7 +443,7 @@ with DAG(
 
     @task(task_id="trigger_next_run")
     def trigger_next_run(**context):
-        trigger_time_str = context["ti"].xcom_pull(task_id="calculate_trigger_time")
+        trigger_time_str = context["ti"].xcom_pull(task_ids="calculate_trigger_time")
         trigger_time = datetime.fromisoformat(trigger_time_str)
         trigger = TriggerDagRunOperator(
             task_id="trigger_dag",
