@@ -16,17 +16,15 @@ from airflow.utils import timezone
 
 from custom_sensors.date_time_sensor import CustomDateTimeSensorAsync # Должен находиться в папке plugins, где развернут airflow
 
+AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
 
-dag_path = os.path.abspath(__file__)
-dag_dir_path = os.path.dirname(os.path.dirname(dag_path))
-airflow_path = os.path.dirname(dag_dir_path)
+DATA_PATH = os.path.join(AIRFLOW_HOME, "data", "clan_war")
+RAW_PATH = os.path.join(DATA_PATH, "raw")
+PROCESSED_PATH = os.path.join(DATA_PATH, "processed")
 
-DATA_PATH = os.getenv(
-    "AIRFLOW_VAR_DATA_PATH",
-    f"{airflow_path}/data/clan_war"
-)
-RAW_PATH = os.path.join(DATA_PATH, "raw"); os.makedirs(RAW_PATH, exist_ok=True)
-PROCESSED_PATH = os.path.join(DATA_PATH, "processed"); os.makedirs(PROCESSED_PATH, exist_ok=True)
+os.makedirs(RAW_PATH, exist_ok=True)
+os.makedirs(PROCESSED_PATH, exist_ok=True)
+
 CLAN_TAG = "2RVCU8GQL"
 REQUEST_URL = f"https://api.clashofclans.com/v1/clans/%23{CLAN_TAG}/currentwar"
 
