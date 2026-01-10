@@ -1,10 +1,10 @@
 import json
 import csv
 import os
-from datetime import datetime, timedelta
-
 import psycopg2
 import requests
+from datetime import datetime, timedelta
+
 from airflow.exceptions import AirflowFailException
 from airflow.hooks.base import BaseHook
 from airflow.models import Variable
@@ -12,6 +12,9 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.sdk import DAG, task
+from airflow.utils import timezone
+
+from custom_sensors.date_time_sensor import CustomDateTimeSensorAsync # Должен находиться в папке plugins, где развернут airflow
 
 
 dag_path = os.path.abspath(__file__)
@@ -41,6 +44,11 @@ with DAG(
 ):
 
     start = EmptyOperator(task_id="start")
+
+    wait_for_next_run = CustomDateTimeSensorAsync(
+        task_id="wait_for_next_run",
+        target_time="{{ dag_run.conf.get('wait_until', logical_date.isoformat()) }}"
+    )
 
     @task(task_id="get_current_ip")
     def get_ip():
@@ -311,7 +319,7 @@ with DAG(
                 with open(input_file, "r") as file:
                     reader = csv.reader(file)
                     next(reader)
-                    cursor.execute("TRUNBCATE TABLE stg.clans")
+                    cursor.execute("TRUNCATE TABLE stg.clans")
                     for row in reader:
                         clan_tag, clan_name, clan_level = row
                         cursor.execute("""
@@ -335,7 +343,7 @@ with DAG(
                 with open(input_file, "r") as file:
                     reader = csv.reader(file)
                     next(reader)
-                    cursor.execute("TRUNBCATE TABLE stg.players")
+                    cursor.execute("TRUNCATE TABLE stg.players")
                     for row in reader:
                         player_tag, player_name, clan_tag, townhall_level = row
                         cursor.execute("""
@@ -359,7 +367,7 @@ with DAG(
                 with open(input_file, "r") as file:
                     reader = csv.reader(file)
                     next(reader)
-                    cursor.execute("TRUNBCATE TABLE stg.wars")
+                    cursor.execute("TRUNCATE TABLE stg.wars")
                     for row in reader:
                         start_time, end_time, team_size, allay_clan_tag, opponent_clan_tag, \
                         allay_attacks, allay_stars, allay_destruction, opponent_attacks, \
@@ -426,32 +434,28 @@ with DAG(
                         """, (player_tag, opponent_tag, int(stars), int(percentage), int(attack_duration), int(attack_order), ))
                 connection.commit()
 
-    @task(task_id="calculate_trigger_time")
+    @task(task_id="calculate_trigger_time", trigger_rule="none_failed")
     def calculate_trigger_time(**context):
         input_file = os.path.join(RAW_PATH, "clan_war_data.json")
         with open(input_file, "r") as file:
             data = json.load(file)
         if data["state"] in ["notInWar", "inMatchmaking"]:
-            trigger_time = context['logical_date'] + timedelta(hours=12)
+            trigger_time = timezone.utcnow() + timedelta(hours=12)
         elif data["state"] == "warEnded":
-            trigger_time = context['logical_date'] + timedelta(days=1)
+            trigger_time = timezone.utcnow() + timedelta(days=1)
         else:
             end_time_str = data["endTime"]
             end_time = datetime.strptime(end_time_str, "%Y%m%dT%H%M%S.%fZ")
             trigger_time = end_time + timedelta(minutes=1)
-        return trigger_time.isoformat()
-
-    @task(task_id="trigger_next_run")
-    def trigger_next_run(**context):
-        trigger_time_str = context["ti"].xcom_pull(task_ids="calculate_trigger_time")
-        trigger_time = datetime.fromisoformat(trigger_time_str)
-        trigger = TriggerDagRunOperator(
-            task_id="trigger_dag",
-            trigger_dag_id="clan_war_dag",
-            execution_date=trigger_time,
-            wait_for_completion=False
-        )
-        trigger.execute(context)
+        return trigger_time.replace(tzinfo=timezone.utc).isoformat()
+    
+    trigger_next = TriggerDagRunOperator(
+        task_id="trigger_dag",
+        trigger_dag_id="clan_war_dag",
+        conf={
+            "wait_until": "{{ ti.xcom_pull(task_ids='calculate_trigger_time') }}"
+        }
+    )
 
     end = EmptyOperator(task_id='end')
 
@@ -469,7 +473,6 @@ with DAG(
     participants_csv = create_war_participants_csv()
     attacks_csv = create_attacks_csv()
     calculate_trigger = calculate_trigger_time()
-    trigger_next = trigger_next_run()
 
     start_staging = EmptyOperator(task_id="start_staging")
 
@@ -508,7 +511,7 @@ with DAG(
     )
 
 
-    start >> ip >> token >> fetch >> branch
+    start >> wait_for_next_run >> ip >> token >> fetch >> branch
     branch >> [not_in_war, preparations, in_war, ended]
     [not_in_war, preparations, in_war] >> calculate_trigger
     calculate_trigger >> trigger_next >> end
