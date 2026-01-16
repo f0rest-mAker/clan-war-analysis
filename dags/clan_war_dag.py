@@ -11,10 +11,12 @@ from airflow.models import Variable
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import ShortCircuitOperator
 from airflow.sdk import DAG, task
 from airflow.utils import timezone
 
-from custom_sensors.date_time_sensor import CustomDateTimeSensorAsync # Должен находиться в папке plugins, где развернут airflow
+from custom_sensors.date_time_sensor import CustomDateTimeSensorAsync
+
 
 AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
 
@@ -28,18 +30,18 @@ os.makedirs(PROCESSED_PATH, exist_ok=True)
 CLAN_TAG = "2RVCU8GQL"
 REQUEST_URL = f"https://api.clashofclans.com/v1/clans/%23{CLAN_TAG}/currentwar"
 
-
 with DAG(
     "clan_war_dag",
     schedule=None,
+    max_active_runs=1,
     catchup=False,
     default_args={
         "owner": "airflow",
         "depends_on_past": False,
         "retries": 1,
-        "retry_delay": timedelta(minutes=5),
+        "retry_delay": timedelta(minutes=1),
     },
-):
+) as dag:
 
     start = EmptyOperator(task_id="start")
 
@@ -128,13 +130,14 @@ with DAG(
         input_file = os.path.join(RAW_PATH, "clan_war_data.json")
         with open(input_file, "r") as file:
             data = json.load(file)
-        clans_data = [["clan_tag", "clan_name", "clan_level"]]
+        clans_data = [["clan_tag", "clan_name", "clan_level", "war_start_time"]]
         for clan_type in ["clan", "opponent"]:
             clan = data[clan_type]
             clans_data.append([
                 clan["tag"],
                 clan["name"],
-                clan["clanLevel"]
+                clan["clanLevel"],
+                data["startTime"]
             ])
         output_file = os.path.join(PROCESSED_PATH, "clans.csv")
         with open(output_file, mode='w', newline='', encoding='utf-8') as file:
@@ -146,7 +149,7 @@ with DAG(
         input_file = os.path.join(RAW_PATH, "clan_war_data.json")
         with open(input_file, "r") as file:
             data = json.load(file)
-        players_data = [["player_tag", "player_name", "clan_tag", "townhall_level"]]
+        players_data = [["player_tag", "player_name", "clan_tag", "townhall_level", "war_start_time"]]
         for clan_type in ["clan", "opponent"]:
             clan = data[clan_type]
             clan_tag = clan["tag"]
@@ -155,7 +158,8 @@ with DAG(
                     member["tag"],
                     member["name"],
                     clan_tag,
-                    member["townhallLevel"]
+                    member["townhallLevel"],
+                    data["startTime"]
                 ])
         output_file = os.path.join(PROCESSED_PATH, "players.csv")
         with open(output_file, mode='w', newline='', encoding='utf-8') as file:
@@ -256,6 +260,8 @@ with DAG(
         for type_clan in ["clan", "opponent"]:
             clan = data[type_clan]
             for member in clan["members"]:
+                if not("attacks" in member):
+                    continue
                 for attack in member["attacks"]:
                     attacks_data.append([
                         member["tag"],
@@ -319,11 +325,11 @@ with DAG(
                     next(reader)
                     cursor.execute("TRUNCATE TABLE stg.clans")
                     for row in reader:
-                        clan_tag, clan_name, clan_level = row
+                        clan_tag, clan_name, clan_level, clan_war_time = row
                         cursor.execute("""
-                            INSERT INTO stg.clans (clan_tag, clan_name, clan_level)
-                            VALUES (%s, %s, %s)
-                        """, (clan_tag, clan_name, int(clan_level)))
+                            INSERT INTO stg.clans (clan_tag, clan_name, clan_level, clan_war_time)
+                            VALUES (%s, %s, %s, %s)
+                        """, (clan_tag, clan_name, int(clan_level), clan_war_time))
                 connection.commit()
 
     @task(task_id="load_players_to_staging")
@@ -343,11 +349,11 @@ with DAG(
                     next(reader)
                     cursor.execute("TRUNCATE TABLE stg.players")
                     for row in reader:
-                        player_tag, player_name, clan_tag, townhall_level = row
+                        player_tag, player_name, clan_tag, townhall_level, clan_war_time = row
                         cursor.execute("""
-                            INSERT INTO stg.players (player_tag, player_name, clan_tag, townhall_level)
-                            VALUES (%s, %s, %s, %s)
-                        """, (player_tag, player_name, clan_tag, int(townhall_level)))
+                            INSERT INTO stg.players (player_tag, player_name, clan_tag, townhall_level, clan_war_time)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (player_tag, player_name, clan_tag, int(townhall_level), clan_war_time))
                 connection.commit()
 
     @task(task_id="load_war_to_staging")
@@ -400,11 +406,11 @@ with DAG(
                     reader = csv.reader(file)
                     next(reader)
                     for row in reader:
-                        player_tag, map_position = row
+                        player_tag, map_position, war_start_time = row
                         cursor.execute("""
-                            INSERT INTO stg.war_participants (player_tag, map_position)
-                            VALUES (%s, %s)
-                        """, (player_tag, int(map_position)))
+                            INSERT INTO stg.war_participants (player_tag, map_position, war_start_time)
+                            VALUES (%s, %s, %s)
+                        """, (player_tag, int(map_position), war_start_time))
                 connection.commit()
 
     @task(task_id="load_attacks_to_staging")
@@ -429,7 +435,7 @@ with DAG(
                         cursor.execute("""
                             INSERT INTO stg.attacks (player_tag, opponent_player_tag, stars, percentage, attack_duration, attack_order, war_start_time)
                             VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (player_tag, opponent_tag, int(stars), int(percentage), int(attack_duration), int(attack_order), ))
+                        """, (player_tag, opponent_tag, int(stars), int(percentage), int(attack_duration), int(attack_order), war_start_time))
                 connection.commit()
 
     @task(task_id="calculate_trigger_time", trigger_rule="none_failed")
@@ -455,7 +461,6 @@ with DAG(
         }
     )
 
-    end = EmptyOperator(task_id='end')
 
     ip = get_ip()
     token = login_and_generate_a_token()
@@ -512,8 +517,8 @@ with DAG(
     start >> wait_for_next_run >> ip >> token >> fetch >> branch
     branch >> [not_in_war, preparations, in_war, ended]
     [not_in_war, preparations, in_war] >> calculate_trigger
-    calculate_trigger >> trigger_next >> end
+    calculate_trigger >> trigger_next
     ended >> [clans_csv, players_csv, war_csv, participants_csv, attacks_csv] >> start_staging
     start_staging >> [staging_clans, staging_players, staging_war, staging_participants, staging_attacks] >> start_loading_dds
     start_loading_dds >> load_players >> load_clans >> load_war
-    load_war >> [load_attacks, load_war_participants] >> calculate_trigger >> trigger_next >> end
+    load_war >> [load_attacks, load_war_participants] >> calculate_trigger >> trigger_next

@@ -4,7 +4,8 @@ CREATE SCHEMA stg;
 CREATE TABLE stg.clans (
     clan_tag VARCHAR(12) NULL,
     clan_name VARCHAR(50) NULL,
-    clan_level INT NULL
+    clan_level INT NULL,
+    clan_war_time TIMESTAMP NULL
 );
 
 -- Таблица players
@@ -12,7 +13,8 @@ CREATE TABLE stg.players (
     player_tag VARCHAR(12) NULL,
     player_name VARCHAR(50) NULL,
     clan_tag VARCHAR(12),
-    townhall_level SMALLINT NULL
+    townhall_level SMALLINT NULL,
+    clan_war_time TIMESTAMP NULL
 );
 
 -- Таблица wars

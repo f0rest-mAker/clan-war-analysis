@@ -9,7 +9,7 @@ $$
     deactivating_old AS (
         UPDATE dds.dim_players AS p
         SET 
-            active_to = CURRENT_TIMESTAMP, 
+            active_to = s.clan_war_time, 
             is_current = FALSE
         FROM source_data AS s
         WHERE p.player_tag = s.player_tag 
@@ -17,9 +17,9 @@ $$
         AND (p.townhall_level <> s.townhall_level OR p.player_name <> s.player_name OR p.clan_tag <> s.clan_tag)
         RETURNING p.player_tag
     )
-    INSERT INTO dds.dim_players (player_tag, player_name, clan_tag, townhall_level)
+    INSERT INTO dds.dim_players (player_tag, player_name, clan_tag, townhall_level, active_from)
     SELECT
-        s.player_tag, s.player_name, s.clan_tag, s.townhall_level
+        s.player_tag, s.player_name, s.clan_tag, s.townhall_level, s.clan_war_time
     FROM source_data AS s LEFT JOIN dds.dim_players as p ON
     p.player_tag = s.player_tag AND p.is_current = TRUE
     WHERE p.player_tag IS NULL
@@ -34,7 +34,7 @@ $$
     deactivating_old AS (
         UPDATE dds.dim_clans AS c
         SET 
-            active_to = CURRENT_TIMESTAMP, 
+            active_to = s.clan_war_time, 
             is_current = FALSE
         FROM source_data AS s
         WHERE c.clan_tag = s.clan_tag 
@@ -42,9 +42,9 @@ $$
         AND (c.clan_name <> s.clan_name OR c.clan_level <> s.clan_level)
         RETURNING c.clan_tag
     )
-    INSERT INTO dds.dim_clans (clan_tag, clan_name, clan_level)
+    INSERT INTO dds.dim_clans (clan_tag, clan_name, clan_level, active_from)
     SELECT
-        s.clan_tag, s.clan_name, s.clan_level
+        s.clan_tag, s.clan_name, s.clan_level, s.clan_war_time
     FROM source_data AS s LEFT JOIN dds.dim_clans as c ON
     c.clan_tag = s.clan_tag AND c.is_current = TRUE
     WHERE c.clan_tag IS NULL
