@@ -56,9 +56,8 @@ $$
     WITH source_data AS (
         SELECT * FROM stg.wars
     )
-    INSERT INTO dds.fact_wars (start_time, end_time, team_size, allay_clan_key, opponent_clan_key,
-                               allay_attacks, allay_stars, allay_destruction_percentage, opponent_attacks,
-                               opponent_stars, opponent_destruction_percentage, is_allay_winner, is_draw)
+    INSERT INTO dds.fact_wars (start_time, end_time, team_size, allay_clan_key, 
+                               opponent_clan_key, is_allay_winner, is_draw)
     SELECT
         s.start_time,
         s.end_time,
@@ -71,12 +70,6 @@ $$
          FROM dds.dim_clans 
          WHERE s.opponent_clan_tag = clan_tag AND s.start_time BETWEEN active_from AND active_to
          LIMIT 1) AS opponent_clan_key,
-        s.allay_attacks,
-        s.allay_stars,
-        s.allay_destruction_percentage,
-        s.opponent_attacks,
-        s.opponent_stars,
-        s.opponent_destruction_percentage,
         s.is_allay_winner,
         s.is_draw
     FROM source_data AS s
@@ -85,6 +78,32 @@ $$
         WHERE f.allay_clan_key = allay_clan_key
           AND f.opponent_clan_key = opponent_clan_key
           AND f.start_time = s.start_time
+    )
+$$;
+
+CREATE OR REPLACE FUNCTION dds.load_clan_stats()
+RETURNS void LANGUAGE SQL AS
+$$
+    WITH source_data AS (
+        SELECT * FROM stg.clan_stats_at_war
+    )
+    INSERT INTO dds.fact_clan_stats_at_war (war_id, clan_key, attacks, stars, destruction_percentage)
+    SELECT
+        (SELECT war_id
+         FROM dds.fact_wars
+         WHERE s.start_time BETWEEN start_time and end_time) as war_id,
+        (SELECT clan_key
+         FROM dds.dim_clans 
+         WHERE s.clan_tag = clan_tag AND s.start_time BETWEEN active_from AND active_to 
+         LIMIT 1) AS clan_key,
+        s.attacks_count,
+        s.stars_count,
+        s.destruction_percentage
+    FROM source_data AS s
+    WHERE NOT EXISTS (
+        SELECT 1 FROM dds.fact_clan_stats_at_war f
+        WHERE f.clan_key = clan_key
+          AND f.war_id = war_id
     )
 $$;
 

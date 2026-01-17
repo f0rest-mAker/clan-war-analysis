@@ -177,12 +177,6 @@ with DAG(
             "team_size",
             "allay_clan_tag",
             "opponent_clan_tag",
-            "allay_attacks",
-            "allay_stars",
-            "allay_destruction_percentage",
-            "opponent_attacks",
-            "opponent_stars",
-            "opponent_destruction_percentage",
             "is_allay_winner",
             "is_draw"
         ]]
@@ -206,16 +200,36 @@ with DAG(
             data["teamSize"],
             allay_clan["tag"],
             opponent_clan["tag"],
-            allay_clan["attacks"],
-            allay_stars,
-            allay_destruction_percantage,
-            opponent_clan["attacks"],
-            opponent_stars,
-            opponent_destruction_percantage,
             is_allay_winner,
             is_draw
         ])
         output_file = os.path.join(PROCESSED_PATH, "war.csv")
+        with open(output_file, mode='w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerows(war_data)
+
+    @task(task_id="create_clan_stats_at_war_csv")
+    def create_clan_stats_at_war_csv():
+        input_file = os.path.join(RAW_PATH, "clan_war_data.json")
+        with open(input_file, "r") as file:
+            data = json.load(file)
+        war_data = [[
+            "clan_tag",
+            "attacks",
+            "stars",
+            "destruction_percentage",
+            "start_time"
+        ]]
+        for clan_type in ["clan", "opponent"]:
+            clan = data[clan_type]
+            war_data.append([
+                clan["tag"],
+                clan["attacks"],
+                clan["stars"],
+                clan["destructionPercentage"],
+                data["startTime"]
+            ])
+        output_file = os.path.join(PROCESSED_PATH, "clan_stats_at_war.csv")
         with open(output_file, mode='w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             writer.writerows(war_data)
@@ -351,8 +365,9 @@ with DAG(
                     for row in reader:
                         player_tag, player_name, clan_tag, townhall_level, clan_war_time = row
                         cursor.execute("""
-                            INSERT INTO stg.players (player_tag, player_name, clan_tag, townhall_level, clan_war_time)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO stg.players (
+                                player_tag, player_name, clan_tag, townhall_level, clan_war_time
+                            ) VALUES (%s, %s, %s, %s, %s)
                         """, (player_tag, player_name, clan_tag, int(townhall_level), clan_war_time))
                 connection.commit()
 
@@ -374,19 +389,39 @@ with DAG(
                     cursor.execute("TRUNCATE TABLE stg.wars")
                     for row in reader:
                         start_time, end_time, team_size, allay_clan_tag, opponent_clan_tag, \
-                        allay_attacks, allay_stars, allay_destruction, opponent_attacks, \
-                        opponent_stars, opponent_destruction, is_allay_winner, is_draw = row
+                        is_allay_winner, is_draw = row
                         cursor.execute("""
                             INSERT INTO stg.wars (
                                 start_time, end_time, team_size, allay_clan_tag, opponent_clan_tag,
-                                allay_attacks, allay_stars, allay_destruction_percentage,
-                                opponent_attacks, opponent_stars, opponent_destruction_percentage,
                                 is_allay_winner, is_draw
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """, (start_time, end_time, int(team_size), allay_clan_tag, opponent_clan_tag,
-                              int(allay_attacks), int(allay_stars), float(allay_destruction),
-                              int(opponent_attacks), int(opponent_stars), float(opponent_destruction),
                               bool(int(is_allay_winner)), bool(int(is_draw))))
+                connection.commit()
+    
+    @task(task_id="load_clan_stats_at_war_to_staging")
+    def load_clan_stats_at_war_to_staging():
+        conn = BaseHook.get_connection("clan_war_db")
+        with psycopg2.connect(
+            host=conn.host,
+            port=conn.port,
+            dbname=conn.schema,
+            user=conn.login,
+            password=conn.password
+        ) as connection:
+            with connection.cursor() as cursor:
+                input_file = os.path.join(PROCESSED_PATH, "clan_stats_at_war.csv")
+                with open(input_file, "r") as file:
+                    reader = csv.reader(file)
+                    next(reader)
+                    cursor.execute("TRUNCATE TABLE stg.clan_stats_at_war")
+                    for row in reader:
+                        clan_tag, attacks, stars, destruction, start_time = row
+                        cursor.execute("""
+                            INSERT INTO stg.clan_stats_at_war (
+                                clan_tag, attacks_count, stars_count, destruction_percentage, start_time
+                            ) VALUES (%s, %s, %s, %s, %s)
+                        """, clan_tag, int(attacks), int(stars), float(destruction), start_time)
                 connection.commit()
 
     @task(task_id="load_war_participants_to_staging")
@@ -473,6 +508,7 @@ with DAG(
     clans_csv = create_clans_csv()
     players_csv = create_players_csv()
     war_csv = create_war_csv()
+    clan_stats_csv = create_clan_stats_at_war_csv()
     participants_csv = create_war_participants_csv()
     attacks_csv = create_attacks_csv()
     calculate_trigger = calculate_trigger_time()
@@ -482,6 +518,7 @@ with DAG(
     staging_clans = load_clans_to_staging()
     staging_players = load_players_to_staging()
     staging_war = load_war_to_staging()
+    staging_clan_stats = load_clan_stats_at_war_to_staging()
     staging_participants = load_war_participants_to_staging()
     staging_attacks = load_attacks_to_staging()
 
@@ -502,6 +539,11 @@ with DAG(
         conn_id="clan_war_db",
         sql="SELECT dds.load_fact_war()"
     )
+    load_clan_stats = SQLExecuteQueryOperator(
+        task_id="load_clan_stats",
+        conn_id="clan_war_db",
+        sql="SELECT dds.load_clan_stats()"
+    )
     load_attacks = SQLExecuteQueryOperator(
         task_id="load_attacks",
         conn_id="clan_war_db",
@@ -518,7 +560,7 @@ with DAG(
     branch >> [not_in_war, preparations, in_war, ended]
     [not_in_war, preparations, in_war] >> calculate_trigger
     calculate_trigger >> trigger_next
-    ended >> [clans_csv, players_csv, war_csv, participants_csv, attacks_csv] >> start_staging
-    start_staging >> [staging_clans, staging_players, staging_war, staging_participants, staging_attacks] >> start_loading_dds
-    start_loading_dds >> load_players >> load_clans >> load_war
-    load_war >> [load_attacks, load_war_participants] >> calculate_trigger >> trigger_next
+    ended >> [clans_csv, players_csv, war_csv, clan_stats_csv, participants_csv, attacks_csv] >> start_staging
+    start_staging >> [staging_clans, staging_players, staging_war, staging_clan_stats, staging_participants, staging_attacks] >> start_loading_dds
+    start_loading_dds >> load_players >> load_clans >> load_war >> load_clan_stats
+    load_clan_stats >> [load_attacks, load_war_participants] >> calculate_trigger >> trigger_next

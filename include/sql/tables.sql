@@ -25,18 +25,19 @@ CREATE TABLE stg.wars (
     allay_clan_tag VARCHAR(12) NULL,
     opponent_clan_tag VARCHAR(12) NULL,
     
-    allay_attacks INT NULL,
-    allay_stars INT NULL,
-    allay_destruction_percentage DECIMAL(9,6) NULL,
-    
-    opponent_attacks INT NULL,
-    opponent_stars INT NULL,
-    opponent_destruction_percentage DECIMAL(9,6) NULL,
-    
     is_allay_winner BOOLEAN,
     is_draw BOOLEAN DEFAULT FALSE,
     is_war_ended BOOLEAN DEFAULT FALSE
 );
+
+-- Таблица clan_stats_at_war
+CREATE TABLE stg.clan_stats_at_war (
+    clan_tag VARCHAR(12) NULL,
+    attacks_count INT NULL,
+    stars_count INT NULL,
+    destruction_percentage DECIMAL(9,6) NULL,
+    start_time TIMESTAMP NULL
+)
 
 -- Таблица attacks
 CREATE TABLE stg.attacks (
@@ -100,14 +101,6 @@ CREATE TABLE dds.fact_wars (
     allay_clan_key INT NOT NULL,
     opponent_clan_key INT NOT NULL,
     
-    allay_attacks INT NOT NULL,
-    allay_stars INT NOT NULL,
-    allay_destruction_percentage DECIMAL(9,6) NOT NULL,
-    
-    opponent_attacks INT NOT NULL,
-    opponent_stars INT NOT NULL,
-    opponent_destruction_percentage DECIMAL(9,6) NOT NULL,
-    
     is_allay_winner BOOLEAN,
     is_draw BOOLEAN DEFAULT FALSE,
     
@@ -121,8 +114,6 @@ CREATE TABLE dds.fact_wars (
     
     CONSTRAINT chk_team_size CHECK (team_size > 0),
     CONSTRAINT chk_time_order CHECK (end_time > start_time),
-    CONSTRAINT chk_allay_percentage CHECK (allay_destruction_percentage BETWEEN 0 AND 100),
-    CONSTRAINT chk_opponent_percentage CHECK (opponent_destruction_percentage BETWEEN 0 AND 100),
     CONSTRAINT chk_allay_stars CHECK (allay_stars BETWEEN 0 AND team_size * 3),
     CONSTRAINT chk_opponent_stars CHECK (opponent_stars BETWEEN 0 AND team_size * 3),
     CONSTRAINT chk_war_status CHECK (
@@ -137,6 +128,22 @@ CREATE INDEX idx_fact_wars_battling_clans ON dds.fact_wars (allay_clan_key, oppo
 CREATE INDEX idx_fact_wars_time_range ON dds.fact_wars (start_time, end_time);
 CREATE INDEX idx_fact_wars_allay_clan ON dds.fact_wars (allay_clan_key);
 CREATE INDEX idx_fact_wars_opponent_clan ON dds.fact_wars (opponent_clan_key);
+
+--Таблица fact_clan_stats_at_war
+CREATE TABLE dds.fact_clan_stats_at_war (
+    war_id INT REFERENCES dds.fact_wars(war_id),
+    clan_key INT REFERENCES dds.dim_clans(clan_key),
+    
+    attacks INT NOT NULL,
+    stars INT NOT NULL,
+    destruction_percentage DECIMAL(9,6) NOT NULL,
+
+    PRIMARY KEY (war_id, clan_key)
+);
+
+CREATE INDEX idx_fact_clan_stats_at_war_id ON dds.fact_clan_stats_at_war (war_id);
+CREATE INDEX idx_fact_clan_stats_at_war_clan_key ON dds.fact_clan_stats_at_war (clan_key);
+CREATE INDEX idx_fact_clan_stats_at_war_composite ON dds.fact_clan_stats_at_war (war_id, clan_key);
 
 -- Таблица fact_attacks
 CREATE TABLE dds.fact_attacks (
